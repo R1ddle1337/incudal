@@ -3,8 +3,14 @@
  */
 
 import { prisma } from './prisma.js'
+import { Prisma } from '@prisma/client'
 import type { PaymentProvider, PaymentProviderType, PaymentProviderStatus } from '@prisma/client'
 import { encryptSensitiveData, decryptSensitiveData } from '../lib/security.js'
+
+/** 金额四舍五入到 2 位小数（Decimal 定点运算，避免浮点累积误差） */
+function feeRound2(value: InstanceType<typeof Prisma.Decimal>): number {
+  return Number(value.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP))
+}
 
 // ==================== 类型定义 ====================
 
@@ -246,7 +252,7 @@ export async function deletePaymentProvider(id: number): Promise<void> {
 export function calculateFee(provider: PaymentProvider, amount: number): number {
   const feeRate = Number(provider.feeRate)
   const feeFixed = Number(provider.feeFixed)
-  return Number((amount * feeRate + feeFixed).toFixed(2))
+  return feeRound2(new Prisma.Decimal(amount).times(feeRate).plus(feeFixed))
 }
 
 function normalizeMethodFeeEntry(entry: unknown): PaymentMethodFeeConfig {
@@ -328,7 +334,7 @@ export function calculatePaymentFee(
   paymentMethod?: string | null
 ): number {
   const feeConfig = getPaymentFeeConfig(provider, paymentMethod)
-  return Number((amount * feeConfig.feeRate + feeConfig.feeFixed).toFixed(2))
+  return feeRound2(new Prisma.Decimal(amount).times(feeConfig.feeRate).plus(feeConfig.feeFixed))
 }
 
 /**
@@ -340,11 +346,11 @@ export function calculatePayableAmount(
   paymentMethod?: string | null
 ): number {
   if (!isSurchargeFeeProvider(provider)) {
-    return Number(amount.toFixed(2))
+    return feeRound2(new Prisma.Decimal(amount))
   }
 
   const fee = calculatePaymentFee(provider, amount, paymentMethod)
-  return Number((amount + fee).toFixed(2))
+  return feeRound2(new Prisma.Decimal(amount).plus(fee))
 }
 
 /**
@@ -353,10 +359,10 @@ export function calculatePayableAmount(
 export function calculateActualAmount(provider: PaymentProvider, amount: number): number {
   if (!isSurchargeFeeProvider(provider)) {
     const fee = calculateFee(provider, amount)
-    return Number((amount - fee).toFixed(2))
+    return feeRound2(new Prisma.Decimal(amount).minus(fee))
   }
 
-  return Number(amount.toFixed(2))
+  return feeRound2(new Prisma.Decimal(amount))
 }
 
 /**

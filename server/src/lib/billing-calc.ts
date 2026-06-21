@@ -2,7 +2,24 @@
  * 公共计费计算模块
  * 所有涉及价格、日价、差价、剩余价值的计算必须使用本模块的方法
  * 确保全系统计算逻辑一致
+ *
+ * 金额运算统一使用 Prisma.Decimal（decimal.js 定点数），避免 JS 浮点
+ * 在多步乘除链路中累积误差导致差价/退款 ±0.01 偏差与对账不平。
  */
+
+import { Prisma } from '@prisma/client'
+
+const Decimal = Prisma.Decimal
+
+/** 四舍五入到 2 位小数并转为 number（用于金额） */
+function round2(value: InstanceType<typeof Prisma.Decimal>): number {
+  return Number(value.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP))
+}
+
+/** 四舍五入到 4 位小数并转为 number（用于日价展示） */
+function round4(value: InstanceType<typeof Prisma.Decimal>): number {
+  return Number(value.toDecimalPlaces(4, Prisma.Decimal.ROUND_HALF_UP))
+}
 
 // ==================== 周期天数常量 ====================
 
@@ -61,7 +78,7 @@ export function calculateMonthlyPrice(price: number, billingCycle: number): numb
  * @returns 折扣后价格（元）
  */
 export function calculateDiscountedPrice(originalPrice: number, discountRate: number): number {
-  return Number((originalPrice * (1 - discountRate)).toFixed(2))
+  return round2(new Decimal(originalPrice).times(new Decimal(1).minus(discountRate)))
 }
 
 /**
@@ -71,7 +88,7 @@ export function calculateDiscountedPrice(originalPrice: number, discountRate: nu
  * @returns 折扣金额（元）
  */
 export function calculateDiscountAmount(originalPrice: number, discountRate: number): number {
-  return Number((originalPrice * discountRate).toFixed(2))
+  return round2(new Decimal(originalPrice).times(discountRate))
 }
 
 // ==================== 剩余天数计算 ====================
@@ -122,8 +139,9 @@ export function calculateRemainingValue(
   const effectivePrice = discountRate > 0
     ? calculateDiscountedPrice(price, discountRate)
     : price
-  const dailyPrice = calculateDailyPrice(effectivePrice, billingCycle)
-  return Number((dailyPrice * remainingDays).toFixed(2))
+  // 全程 Decimal：effectivePrice / cycleDays * remainingDays，避免日价浮点丢精度
+  const cycleDays = getCycleDays(billingCycle)
+  return round2(new Decimal(effectivePrice).div(cycleDays).times(remainingDays))
 }
 
 /**
@@ -151,7 +169,7 @@ export function calculateSafeRefundAmount(
   // 计算剩余价值
   const cycleDays = getCycleDays(billingCycle)
   const remainingRatio = Math.min(remainingDays / cycleDays, 1) // 比例不能超过 1
-  const refundAmount = Number((effectivePrice * remainingRatio).toFixed(2))
+  const refundAmount = round2(new Decimal(effectivePrice).times(remainingRatio))
 
   // 如果提供了最大可退款金额，取较小值
   if (maxRefundable !== undefined) {
@@ -196,15 +214,15 @@ export function calculatePriceDiff(
     ? calculateDiscountedPrice(newPrice, discountRate)
     : newPrice
 
-  // 计算日价
-  const oldDailyPrice = calculateDailyPrice(actualOldPrice, oldBillingCycle)
-  const newDailyPrice = calculateDailyPrice(actualNewPrice, newBillingCycle)
+  // 全程 Decimal 计算日价与差价，避免浮点累积误差
+  const oldDailyPrice = new Decimal(actualOldPrice).div(getCycleDays(oldBillingCycle))
+  const newDailyPrice = new Decimal(actualNewPrice).div(getCycleDays(newBillingCycle))
 
   // 差价 = (新日价 - 旧日价) × 剩余天数
-  const priceDiff = (newDailyPrice - oldDailyPrice) * remainingDays
+  const priceDiff = newDailyPrice.minus(oldDailyPrice).times(remainingDays)
 
   // 最低金额门槛：低于 0.01 元按 0 处理
-  return Math.abs(priceDiff) < 0.01 ? 0 : Number(priceDiff.toFixed(2))
+  return priceDiff.abs().lessThan(0.01) ? 0 : round2(priceDiff)
 }
 
 /**
@@ -244,33 +262,35 @@ export function calculatePlanChangeDetails(
     ? calculateDiscountedPrice(newPrice, discountRate)
     : newPrice
 
-  // 计算日价
-  const oldDailyPrice = calculateDailyPrice(actualOldPrice, oldBillingCycle)
-  const newDailyPrice = calculateDailyPrice(actualNewPrice, newBillingCycle)
+  // 全程 Decimal 计算日价
+  const oldDailyPrice = new Decimal(actualOldPrice).div(getCycleDays(oldBillingCycle))
+  const newDailyPrice = new Decimal(actualNewPrice).div(getCycleDays(newBillingCycle))
 
   // 剩余价值 = 旧日价 × 剩余天数
-  const remainingValue = Number((oldDailyPrice * remainingDays).toFixed(2))
+  const remainingValueDec = oldDailyPrice.times(remainingDays)
+  const remainingValue = round2(remainingValueDec)
 
   // 新方案费用 = 新日价 × 剩余天数
-  const newPlanCost = Number((newDailyPrice * remainingDays).toFixed(2))
+  const newPlanCostDec = newDailyPrice.times(remainingDays)
+  const newPlanCost = round2(newPlanCostDec)
 
   // 折扣金额（基于新方案原价）
   const discountAmount = discountRate > 0
-    ? Number(((newPrice / getCycleDays(newBillingCycle)) * remainingDays * discountRate).toFixed(2))
+    ? round2(new Decimal(newPrice).div(getCycleDays(newBillingCycle)).times(remainingDays).times(discountRate))
     : 0
 
   // 差价
-  const priceDiff = Number((newPlanCost - remainingValue).toFixed(2))
-  const finalPriceDiff = Math.abs(priceDiff) < 0.01 ? 0 : priceDiff
+  const priceDiffDec = newPlanCostDec.minus(remainingValueDec)
+  const finalPriceDiff = priceDiffDec.abs().lessThan(0.01) ? 0 : round2(priceDiffDec)
 
   return {
-    oldDailyPrice: Number(oldDailyPrice.toFixed(4)),
-    newDailyPrice: Number(newDailyPrice.toFixed(4)),
+    oldDailyPrice: round4(oldDailyPrice),
+    newDailyPrice: round4(newDailyPrice),
     remainingValue,
     newPlanCost,
     discountAmount,
     priceDiff: finalPriceDiff,
-    isUpgrade: newDailyPrice > oldDailyPrice
+    isUpgrade: newDailyPrice.greaterThan(oldDailyPrice)
   }
 }
 
@@ -288,11 +308,13 @@ export function calculateRenewAmount(
   months: number,
   discountRate: number = 0
 ): { originalAmount: number; discountAmount: number; finalAmount: number } {
-  const originalAmount = Number((monthlyPrice * months).toFixed(2))
-  const discountAmount = discountRate > 0
-    ? Number((originalAmount * discountRate).toFixed(2))
-    : 0
-  const finalAmount = Number((originalAmount - discountAmount).toFixed(2))
+  const originalAmountDec = new Decimal(monthlyPrice).times(months)
+  const originalAmount = round2(originalAmountDec)
+  const discountAmountDec = discountRate > 0
+    ? originalAmountDec.times(discountRate)
+    : new Decimal(0)
+  const discountAmount = round2(discountAmountDec)
+  const finalAmount = round2(originalAmountDec.minus(discountAmountDec))
 
   return { originalAmount, discountAmount, finalAmount }
 }
