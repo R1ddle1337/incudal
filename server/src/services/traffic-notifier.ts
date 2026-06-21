@@ -6,7 +6,7 @@
 
 import * as db from '../db/index.js'
 import { formatBytes } from './traffic-utils.js'
-import { assertSafeWebhookUrl } from '../lib/outbound-security.js'
+import { safeWebhookFetch } from '../lib/outbound-security.js'
 
 // 重新导出 formatBytes 供其他模块使用
 export { formatBytes }
@@ -262,8 +262,7 @@ async function sendDiscord(
     }
 
     try {
-        const parsedUrl = await assertSafeWebhookUrl(webhookUrl)
-        const response = await fetch(parsedUrl.toString(), {
+        const response = await safeWebhookFetch(webhookUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({

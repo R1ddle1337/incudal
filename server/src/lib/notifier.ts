@@ -7,7 +7,7 @@
 import * as db from '../db/index.js'
 import { createInboxMessage } from '../db/inbox.js'
 import { prisma } from '../db/prisma.js'
-import { assertSafeWebhookUrl } from './outbound-security.js'
+import { safeWebhookFetch } from './outbound-security.js'
 
 // 重试配置
 const MAX_RETRIES = 3
@@ -1206,8 +1206,7 @@ async function sendDiscord(
       color = 0x9b59b6 // 紫色
     }
 
-    const parsedUrl = await assertSafeWebhookUrl(webhookUrl)
-    const response = await fetch(parsedUrl.toString(), {
+    const response = await safeWebhookFetch(webhookUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1253,7 +1252,6 @@ async function sendWebhook(
   }
 
   try {
-    const parsedUrl = await assertSafeWebhookUrl(url)
     const payload = {
       event: eventType,
       title,
@@ -1275,7 +1273,7 @@ async function sendWebhook(
       headers['X-Signature'] = signature
     }
 
-    const response = await fetch(parsedUrl.toString(), {
+    const response = await safeWebhookFetch(url, {
       method: 'POST',
       headers,
       body: JSON.stringify(payload),

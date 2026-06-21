@@ -1,5 +1,7 @@
 import { lookup as dnsLookup } from 'dns/promises'
 import { isIP } from 'net'
+import { Agent } from 'undici'
+import type { LookupAddress } from 'dns'
 
 export class OutboundTargetValidationError extends Error {
   constructor(message: string) {
@@ -94,7 +96,7 @@ export function isIpPrivateOrReserved(ip: string): boolean {
   return true
 }
 
-async function assertPublicHostname(hostname: string): Promise<void> {
+async function assertPublicHostname(hostname: string): Promise<LookupAddress[]> {
   const normalizedHost = hostname.trim().toLowerCase().replace(/\.$/, '')
   if (!normalizedHost) {
     throw new OutboundTargetValidationError('Hostname cannot be empty')
@@ -114,14 +116,15 @@ async function assertPublicHostname(hostname: string): Promise<void> {
     if (isIpPrivateOrReserved(normalizedHost)) {
       throw new OutboundTargetValidationError('Private or reserved IP targets are not allowed')
     }
-    return
+    // 字面 IP：不会触发 DNS 解析，无重绑风险，直接固定该 IP
+    return [{ address: normalizedHost, family }]
   }
 
   if (!normalizedHost.includes('.')) {
     throw new OutboundTargetValidationError('Private or local hostnames are not allowed')
   }
 
-  let records: Array<{ address: string }>
+  let records: LookupAddress[]
   try {
     records = await dnsLookup(normalizedHost, { all: true, verbatim: true })
   } catch (error: any) {
@@ -138,6 +141,9 @@ async function assertPublicHostname(hostname: string): Promise<void> {
       throw new OutboundTargetValidationError('Targets resolving to private or reserved IPs are not allowed')
     }
   }
+
+  // 返回已校验的解析结果，供调用方固定连接 IP（防 DNS Rebinding）
+  return records
 }
 
 export async function assertSafeWebhookUrl(url: string): Promise<URL> {
@@ -148,6 +154,48 @@ export async function assertSafeWebhookUrl(url: string): Promise<URL> {
 
   await assertPublicHostname(parsed.hostname)
   return parsed
+}
+
+/**
+ * 安全地向 Webhook 发起请求（防 SSRF + DNS Rebinding）。
+ *
+ * 关键点：assertSafeWebhookUrl 解析校验后，如果直接 fetch(url)，undici 会**重新做一次
+ * DNS 解析**，攻击者控制的权威 DNS 可在两次解析之间把记录改成 127.0.0.1 / 169.254.169.254
+ * 等内网地址（DNS Rebinding）绕过校验。这里把连接 IP **固定**为校验时解析到的地址，
+ * 自定义 undici lookup 不再二次解析，从根本上杜绝重绑。
+ */
+export async function safeWebhookFetch(
+  url: string,
+  init: RequestInit = {}
+): Promise<Response> {
+  const parsed = buildUrl(url, 'https')
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new OutboundTargetValidationError('Webhook URL must use http or https')
+  }
+
+  const validatedAddresses = await assertPublicHostname(parsed.hostname)
+
+  // 自定义 lookup：只返回校验通过的 IP，绝不二次解析
+  const pinnedLookup = (
+    _hostname: string,
+    _options: unknown,
+    callback: (err: NodeJS.ErrnoException | null, address: string | LookupAddress[], family?: number) => void
+  ): void => {
+    callback(null, validatedAddresses)
+  }
+
+  const dispatcher = new Agent({
+    connect: {
+      lookup: pinnedLookup as never
+    }
+  })
+
+  try {
+    // @ts-expect-error undici 的 dispatcher 选项不在标准 RequestInit 类型里
+    return await fetch(parsed.toString(), { ...init, dispatcher })
+  } finally {
+    await dispatcher.close().catch(() => {})
+  }
 }
 
 export async function assertSafeStorageTarget(

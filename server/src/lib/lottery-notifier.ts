@@ -3,7 +3,7 @@
  * 向管理员配置的通知渠道发送中奖通知
  */
 import * as db from '../db/index.js'
-import { assertSafeWebhookUrl } from './outbound-security.js'
+import { safeWebhookFetch } from './outbound-security.js'
 
 // ==================== 通知内容模板 ====================
 
@@ -183,8 +183,7 @@ async function sendDiscord(
     color = 0x9b59b6 // 紫色
   }
 
-  const parsedUrl = await assertSafeWebhookUrl(webhookUrl)
-  const response = await fetch(parsedUrl.toString(), {
+  const response = await safeWebhookFetch(webhookUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -232,8 +231,7 @@ async function sendWebhook(
     headers['X-Signature'] = signature
   }
 
-  const parsedUrl = await assertSafeWebhookUrl(url)
-  const response = await fetch(parsedUrl.toString(), {
+  const response = await safeWebhookFetch(url, {
     method: 'POST',
     headers,
     body: JSON.stringify({
