@@ -11,7 +11,8 @@ import {
     getClientIP,
     checkIPConnectionLimit,
     checkUserConnectionLimit,
-    registerConnection
+    registerConnection,
+    isAllowedWebSocketOrigin
 } from '../lib/websocket-security.js'
 import {
     createTerminalSession,
@@ -116,6 +117,13 @@ export default async function terminalRoutes(fastify: FastifyInstance) {
         const { id } = request.params
         const instanceId = Number(id)
         const clientIP = getClientIP(request)
+
+        // 0. Origin 校验（防跨站 WebSocket 劫持 CSWSH）
+        if (!isAllowedWebSocketOrigin(request)) {
+            safeSend(socket, JSON.stringify({ type: 'error', code: 'FORBIDDEN_ORIGIN', message: 'Origin not allowed' }))
+            socket.close(4003, 'Origin not allowed')
+            return
+        }
 
         // 1. 验证实例 ID
         if (isNaN(instanceId)) {

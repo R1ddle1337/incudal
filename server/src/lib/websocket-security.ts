@@ -121,6 +121,40 @@ export function setAuthenticationTimeout(socket: WebSocket, timeoutMs: number = 
 }
 
 /**
+ * 校验 WebSocket 握手的 Origin 是否在允许列表内（防跨站 WebSocket 劫持 CSWSH）。
+ *
+ * 生产环境对齐 CORS 的 FRONTEND_URL 白名单；开发环境放行本地 Vite。
+ * 无 Origin 头（如非浏览器客户端）在生产环境一律拒绝，开发环境放行。
+ */
+export function isAllowedWebSocketOrigin(request: FastifyRequest): boolean {
+    const origin = request.headers.origin
+    const isProduction = process.env.NODE_ENV === 'production'
+
+    if (!isProduction) {
+        // 开发环境：放行（含本地 Vite、无 Origin 的工具）
+        return true
+    }
+
+    if (!origin) {
+        // 生产环境缺少 Origin：拒绝
+        return false
+    }
+
+    const allowed = (process.env.FRONTEND_URL || '')
+        .split(',')
+        .map(u => u.trim().replace(/\/$/, ''))
+        .filter(Boolean)
+
+    if (allowed.length === 0) {
+        // 未配置白名单时保守拒绝（生产环境应配置 FRONTEND_URL）
+        return false
+    }
+
+    const normalizedOrigin = origin.trim().replace(/\/$/, '')
+    return allowed.includes(normalizedOrigin)
+}
+
+/**
  * 获取当前连接统计
  */
 export function getConnectionStats(): {
