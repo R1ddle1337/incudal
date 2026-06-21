@@ -5,6 +5,18 @@
 
 import crypto from 'crypto'
 
+/**
+ * 定时安全的 hex 字符串比较，防止签名比较的时序侧信道。
+ * 长度不等或非法时直接返回 false。
+ */
+function timingSafeEqualHex(a: string, b: string): boolean {
+  if (typeof a !== 'string' || typeof b !== 'string') return false
+  const bufA = Buffer.from(a)
+  const bufB = Buffer.from(b)
+  if (bufA.length !== bufB.length) return false
+  return crypto.timingSafeEqual(bufA, bufB)
+}
+
 // SDK 版本类型
 export type EpayVersion = 'v1' | 'v2'
 
@@ -118,8 +130,17 @@ export class EpayCoreV1 implements IEpayClient {
    */
   verify(data: CallbackData): boolean {
     if (!data || !data.sign) return false
+
+    // 时间戳新鲜度校验（若回调带 timestamp，允许 5 分钟误差，防重放）
+    if (data.timestamp) {
+      const timestamp = parseInt(data.timestamp, 10)
+      if (!Number.isFinite(timestamp) || Math.abs(Date.now() / 1000 - timestamp) > 300) {
+        return false
+      }
+    }
+
     const sign = this.getSign(data as unknown as Record<string, string>)
-    return sign === data.sign
+    return timingSafeEqualHex(sign, data.sign)
   }
 
   /**
@@ -131,9 +152,17 @@ export class EpayCoreV1 implements IEpayClient {
       return { valid: false, tradeSuccess: false, error: '缺少签名参数' }
     }
 
-    // 验证签名
+    // 时间戳新鲜度校验（若带 timestamp，防重放）
+    if (data.timestamp) {
+      const timestamp = parseInt(data.timestamp, 10)
+      if (!Number.isFinite(timestamp) || Math.abs(Date.now() / 1000 - timestamp) > 300) {
+        return { valid: false, tradeSuccess: false, error: '回调时间戳过期' }
+      }
+    }
+
+    // 验证签名（定时安全比较，防时序侧信道）
     const sign = this.getSign(data as unknown as Record<string, string>)
-    if (sign !== data.sign) {
+    if (!timingSafeEqualHex(sign, data.sign)) {
       return { valid: false, tradeSuccess: false, error: '签名验证失败' }
     }
 
