@@ -1011,14 +1011,13 @@ export function encryptSensitiveData(plaintext: string): string {
  * 解密敏感数据
  */
 export function decryptSensitiveData(ciphertext: string): string | null {
-    try {
-        const parts = ciphertext.split(':')
-        if (parts.length !== 3) {
-            // 可能是未加密的旧数据，直接返回
-            return ciphertext
-        }
+    // 不符合 iv:tag:encrypted 格式：视为未加密的旧数据，原样返回（向后兼容）
+    if (!isEncrypted(ciphertext)) {
+        return ciphertext
+    }
 
-        const [ivHex, tagHex, encrypted] = parts
+    try {
+        const [ivHex, tagHex, encrypted] = ciphertext.split(':')
         const key = getEncryptionKey()
         const iv = Buffer.from(ivHex, 'hex')
         const tag = Buffer.from(tagHex, 'hex')
@@ -1031,9 +1030,10 @@ export function decryptSensitiveData(ciphertext: string): string | null {
 
         return decrypted
     } catch (err) {
-        // Decryption failed, might be unencrypted old data
-        console.warn('Decryption failed, returning original data')
-        return ciphertext
+        // 数据格式是加密的但解密/认证失败（密文被篡改、损坏或密钥变更）：
+        // 绝不返回原始密文，否则密文会被当作明文(如密码/密钥)使用。返回 null 让调用方处理。
+        console.error('Decryption/auth failed for encrypted data, refusing to return ciphertext')
+        return null
     }
 }
 
