@@ -1,4 +1,29 @@
 import { marked, Renderer } from 'marked'
+import DOMPurify from 'dompurify'
+
+/**
+ * 校验 URL 协议是否安全，过滤 javascript:/data: 等伪协议(防 XSS)。
+ * 允许 http/https/mailto 以及站内相对路径(/ 或 #、? 开头)。
+ */
+function sanitizeUrl(url: string | null | undefined): string {
+  if (!url) return ''
+  const trimmed = url.trim()
+  // 站内相对/锚点链接放行
+  if (/^[/#?]/.test(trimmed)) return trimmed
+  // 仅允许安全协议
+  if (/^(https?:|mailto:)/i.test(trimmed)) return trimmed
+  // 其它(javascript:/data:/vbscript: 等)一律拒绝
+  return ''
+}
+
+/** HTML 属性值转义，防止属性注入 */
+function escapeAttr(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+}
 
 // 自定义 Alert 颜色配置
 const alertColors: Record<string, { bg: string; bgLight: string; border: string; text: string; textLight: string; icon: string }> = {
@@ -85,22 +110,24 @@ function createCustomRenderer(): Renderer {
 
   // 自定义链接渲染 - 外部链接新窗口打开
   renderer.link = ({ href, title, text }) => {
-    const isExternal = href?.startsWith('http://') || href?.startsWith('https://')
-    const titleAttr = title ? ` title="${title}"` : ''
+    const safeHref = sanitizeUrl(href)
+    const isExternal = safeHref.startsWith('http://') || safeHref.startsWith('https://')
+    const titleAttr = title ? ` title="${escapeAttr(title)}"` : ''
     const targetAttr = isExternal ? ' target="_blank" rel="noopener noreferrer"' : ''
     const externalIcon = isExternal
       ? ' <svg class="inline-block w-3.5 h-3.5 ml-0.5 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>'
       : ''
-    return `<a href="${href}"${titleAttr}${targetAttr}>${text}${externalIcon}</a>`
+    return `<a href="${escapeAttr(safeHref)}"${titleAttr}${targetAttr}>${text}${externalIcon}</a>`
   }
 
   // 自定义图片渲染 - 支持图片标题和懒加载
   renderer.image = ({ href, title, text }) => {
-    const titleAttr = title ? ` title="${title}"` : ''
-    const altAttr = text ? ` alt="${text}"` : ''
-    const figcaption = title ? `<figcaption class="text-center text-sm text-themed-muted mt-2">${title}</figcaption>` : ''
+    const safeSrc = sanitizeUrl(href)
+    const titleAttr = title ? ` title="${escapeAttr(title)}"` : ''
+    const altAttr = text ? ` alt="${escapeAttr(text)}"` : ''
+    const figcaption = title ? `<figcaption class="text-center text-sm text-themed-muted mt-2">${escapeAttr(title)}</figcaption>` : ''
     return `<figure class="my-4">
-      <img src="${href}"${altAttr}${titleAttr} loading="lazy" class="rounded-lg max-w-full mx-auto" />
+      <img src="${escapeAttr(safeSrc)}"${altAttr}${titleAttr} loading="lazy" class="rounded-lg max-w-full mx-auto" />
       ${figcaption}
     </figure>`
   }
@@ -185,7 +212,17 @@ export function parseMarkdown(content: string): string {
   const processedContent = parseCustomAlerts(content)
 
   // 使用 marked 解析
-  return marked(processedContent) as string
+  const rawHtml = marked(processedContent) as string
+
+  // 用 DOMPurify 净化，过滤 <script>/onerror 等 XSS 向量。
+  // 允许渲染器产出的 svg/class/target/rel 等，并强制外链 target=_blank。
+  return DOMPurify.sanitize(rawHtml, {
+    USE_PROFILES: { html: true, svg: true },
+    ADD_ATTR: ['target', 'rel', 'loading', 'class', 'fill-rule', 'clip-rule', 'stroke-linecap', 'stroke-linejoin', 'stroke-width', 'viewBox', 'd', 'cx', 'cy', 'r', 'fill', 'stroke'],
+    ADD_TAGS: ['figure', 'figcaption'],
+    FORBID_TAGS: ['style'],
+    FORBID_ATTR: ['onerror', 'onload', 'onclick', 'onmouseover']
+  })
 }
 
 /**
