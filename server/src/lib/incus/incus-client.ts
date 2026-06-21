@@ -10,11 +10,14 @@ import type {
   IncusApiResponse
 } from '../../types/incus.js'
 import { waitForOperation } from './incus-utils.js'
+import { createPinnedConnector } from './cert-pinning.js'
 
 export class IncusClient {
   baseUrl: string
   certPath: string | null
   keyPath: string | null
+  serverCertSha256: string | null
+  onServerCertObserved?: (observedSha256: string, matched: boolean) => void
   agent: Agent | null = null
   connected: boolean = false
 
@@ -22,6 +25,8 @@ export class IncusClient {
     this.baseUrl = IncusClient.normalizeUrl(options.url)
     this.certPath = options.certPath
     this.keyPath = options.keyPath
+    this.serverCertSha256 = options.serverCertSha256 ?? null
+    this.onServerCertObserved = options.onServerCertObserved
   }
 
   /**
@@ -71,11 +76,14 @@ export class IncusClient {
       const key = readFileSync(this.keyPath)
 
       this.agent = new Agent({
-        connect: {
+        // 证书固定：自签名证书仍 rejectUnauthorized:false，但握手后校验服务端证书指纹，
+        // 等价于证书 pinning，防止链路中间人冒充 Incus。
+        connect: createPinnedConnector({
           cert,
           key,
-          rejectUnauthorized: false // Incus 使用自签名证书
-        },
+          expectedSha256: this.serverCertSha256,
+          onObserved: this.onServerCertObserved
+        }),
         // 超时配置，防止 Headers Timeout Error
         headersTimeout: 120000, // 2分钟
         bodyTimeout: 300000     // 5分钟（对于大数据传输）

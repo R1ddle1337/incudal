@@ -7,7 +7,9 @@
 import type { WebSocket as WsWebSocket } from 'ws'
 import { Agent, request } from 'undici'
 import { readFileSync } from 'fs'
+import type { TLSSocket } from 'tls'
 import type { Host } from '../types/database.js'
+import { createPinnedConnector, getPeerCertSha256, normalizeFingerprint } from './incus/cert-pinning.js'
 
 // 证书缓存（避免每次连接都读取文件）
 interface CertCache {
@@ -348,12 +350,16 @@ export async function createIncusConsoleConnection(
     // 使用缓存的证书（避免每次连接都读取文件）
     const { cert, key } = getCachedCertificates(host.cert_path, host.key_path)
 
+    // 已知的服务端证书指纹（与 Incus API 客户端共用同一固定指纹）
+    const expectedSha256 = host.server_cert_sha256 || null
+
     const agent = new Agent({
-        connect: {
+        // 证书固定：握手后校验 Incus 服务端证书指纹，防止链路 MITM 接管 root 终端
+        connect: createPinnedConnector({
             cert,
             key,
-            rejectUnauthorized: false
-        }
+            expectedSha256
+        })
     })
 
     // 对于容器始终使用 exec。
@@ -438,6 +444,21 @@ export async function createIncusConsoleConnection(
         }) as WsWebSocket
     }
 
+    // 证书固定：在 WS 握手完成后校验 Incus 服务端证书指纹，防止 MITM 接管终端流
+    const verifyWsPeerCert = (ws: WsWebSocket): string | null => {
+        if (!expectedSha256) return null // 未固定指纹（TOFU 前），交由 API 客户端首次回写
+        const socket = (ws as unknown as { _socket?: TLSSocket })._socket
+        if (!socket || typeof socket.getPeerCertificate !== 'function') {
+            return '无法获取服务端证书'
+        }
+        const observed = getPeerCertSha256(socket)
+        if (!observed) return '无法获取服务端证书'
+        if (observed !== normalizeFingerprint(expectedSha256)) {
+            return `服务端证书指纹不匹配（疑似 MITM）：期望 ${normalizeFingerprint(expectedSha256)}，实际 ${observed}`
+        }
+        return null
+    }
+
     // 等待连接建立（带资源清理）
     try {
         await Promise.all([
@@ -445,6 +466,11 @@ export async function createIncusConsoleConnection(
                 const timeout = setTimeout(() => reject(new Error('Data WebSocket connection timeout')), 10000)
                 dataWs.once('open', () => {
                     clearTimeout(timeout)
+                    const certErr = verifyWsPeerCert(dataWs)
+                    if (certErr) {
+                        reject(new Error(certErr))
+                        return
+                    }
                     resolve()
                 })
                 dataWs.once('error', (err) => {
@@ -456,6 +482,11 @@ export async function createIncusConsoleConnection(
                 const timeout = setTimeout(() => reject(new Error('Control WebSocket connection timeout')), 10000)
                 controlWs.once('open', () => {
                     clearTimeout(timeout)
+                    const certErr = verifyWsPeerCert(controlWs!)
+                    if (certErr) {
+                        reject(new Error(certErr))
+                        return
+                    }
                     resolve()
                 })
                 controlWs.once('error', (err) => {

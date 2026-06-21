@@ -596,6 +596,7 @@ model Host {
   status              HostStatus   @default(offline)
   certPath            String?      @map("cert_path")
   keyPath             String?      @map("key_path")
+  serverCertSha256    String?      @map("server_cert_sha256") // Incus 服务端证书 SHA-256 指纹（TOFU 固定，防 MITM）
   natPublicIp         String?      @map("nat_public_ip")
   natPublicIpv6       String?      @map("nat_public_ipv6") // 宿主机公网 IPv6（用于 nat_ipv6_nat / ipv6_nat 模式）
   natBindIp           String?      @map("nat_bind_ip") // 端口映射实际监听的 IPv4 地址

@@ -5,6 +5,7 @@
 
 import { Agent, request as undiciRequest } from 'undici'
 import { formatHostForUrl } from './network-address.js'
+import { createPinnedConnector } from './incus/cert-pinning.js'
 
 // 请求超时配置（毫秒）
 const REQUEST_TIMEOUT = 30000 // 30秒
@@ -15,6 +16,10 @@ export interface CaddyClientConfig {
   port: number // Caddy API 端口 (默认 8444)
   username: string // Basic Auth 用户名
   password: string // Basic Auth 密码
+  /** 已知的 Caddy 服务端证书 SHA-256 指纹（证书固定，防 MITM）。为空走 TOFU。 */
+  serverCertSha256?: string | null
+  /** 观测到证书指纹时回调（用于 TOFU 回写 / 指纹变更告警）。 */
+  onCertObserved?: (observedSha256: string, matched: boolean) => void
 }
 
 export interface CaddyRoute {
@@ -40,12 +45,13 @@ export class CaddyClient {
     this.baseUrl = `https://${formatHostForUrl(config.host)}:${config.port}`
     this.authHeader = 'Basic ' + Buffer.from(`${config.username}:${config.password}`).toString('base64')
     
-    // 创建 undici Agent，忽略自签名证书错误，配置超时
+    // 创建 undici Agent：自签名证书仍 rejectUnauthorized:false，但握手后校验证书指纹（防 MITM）
     this.agent = new Agent({
-      connect: {
-        rejectUnauthorized: false,
-        timeout: CONNECT_TIMEOUT
-      }
+      connect: createPinnedConnector({
+        expectedSha256: config.serverCertSha256,
+        onObserved: config.onCertObserved,
+        connectTimeout: CONNECT_TIMEOUT
+      })
     })
   }
 

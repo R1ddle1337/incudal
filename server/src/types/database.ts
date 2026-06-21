@@ -72,6 +72,7 @@ export interface Host {
   status: 'online' | 'offline' | 'maintenance'
   cert_path: string | null
   key_path: string | null
+  server_cert_sha256?: string | null
   nat_public_ip: string | null
   nat_public_ipv6?: string | null
   nat_bind_ip?: string | null

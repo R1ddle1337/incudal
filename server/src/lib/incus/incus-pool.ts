@@ -11,6 +11,24 @@
 import type { IncusClient } from './incus-client.js'
 import { IncusClient as Client } from './incus-client.js'
 import { recordHostSuccess, recordHostError as recordHostHealthError } from './host-health.js'
+import { prisma } from '../../db/prisma.js'
+
+/**
+ * TOFU：把首次观测到的服务端证书指纹回写数据库。
+ * 仅在当前指纹为空时写入，避免覆盖已固定的指纹（防止 MITM 期间被改写）。
+ */
+function persistHostServerCert(hostId: number, observedSha256: string): void {
+  prisma.host.updateMany({
+    where: { id: hostId, serverCertSha256: null },
+    data: { serverCertSha256: observedSha256 }
+  }).then(res => {
+    if (res.count > 0) {
+      console.log(`[IncusPool] 已固定宿主机 ${hostId} 的服务端证书指纹（TOFU）`)
+    }
+  }).catch(err => {
+    console.error(`[IncusPool] 回写宿主机 ${hostId} 证书指纹失败:`, err)
+  })
+}
 
 interface Host {
   id: number
@@ -19,6 +37,8 @@ interface Host {
   key_path?: string | null
   certPath?: string | null
   keyPath?: string | null
+  serverCertSha256?: string | null
+  server_cert_sha256?: string | null
 }
 
 interface PooledClient {
@@ -115,10 +135,22 @@ export async function getIncusClient(host: Host): Promise<IncusClient> {
   // 创建新连接（带锁保护）
   const connectPromise = (async () => {
     try {
+      const knownFingerprint = host.server_cert_sha256 || host.serverCertSha256 || null
+
       const client = new Client({
         url: host.url,
         certPath: host.cert_path || host.certPath || null,
-        keyPath: host.key_path || host.keyPath || null
+        keyPath: host.key_path || host.keyPath || null,
+        serverCertSha256: knownFingerprint,
+        onServerCertObserved: (observed, matched) => {
+          // TOFU：首次连接（无已知指纹）时回写数据库，供后续连接固定
+          if (!knownFingerprint) {
+            persistHostServerCert(host.id, observed)
+          } else if (!matched) {
+            // 已知指纹但不匹配：connector 会断开连接，这里仅告警
+            console.error(`[IncusPool] 宿主机 ${host.id} 服务端证书指纹不匹配，疑似 MITM。observed=${observed}`)
+          }
+        }
       })
 
       await client.connect()

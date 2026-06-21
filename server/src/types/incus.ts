@@ -6,6 +6,10 @@ export interface IncusClientOptions {
   url: string
   certPath: string | null
   keyPath: string | null
+  /** 已知的服务端证书 SHA-256 指纹（用于 mTLS 证书固定，防 MITM）。为空走 TOFU。 */
+  serverCertSha256?: string | null
+  /** 观测到服务端证书指纹时的回调（用于 TOFU 回写 / 指纹变更告警）。 */
+  onServerCertObserved?: (observedSha256: string, matched: boolean) => void
 }
 
 export interface IncusApiResponse<T = unknown> {
