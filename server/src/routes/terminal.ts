@@ -145,7 +145,12 @@ export default async function terminalRoutes(fastify: FastifyInstance) {
         }
 
         // 3. 终端短期票据认证
-        const ticket = request.query.ticket
+        //    优先从 Sec-WebSocket-Protocol 头读取(避免票据出现在 URL/代理日志/浏览器历史)，
+        //    query 作为向后兼容回退。
+        const protocolHeader = request.headers['sec-websocket-protocol']
+        const protocolTicket = (Array.isArray(protocolHeader) ? protocolHeader[0] : protocolHeader)
+            ?.split(',')[0]?.trim()
+        const ticket = protocolTicket || request.query.ticket
         if (!ticket) {
             safeSend(socket, JSON.stringify({
                 type: 'error',

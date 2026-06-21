@@ -520,8 +520,8 @@ async function connectTab(tabId: string) {
             return
         }
 
-        const wsUrl = buildTerminalWebSocketUrl(props.instanceId, ticketResponse.ticket)
-        const ws = new WebSocket(wsUrl)
+        const wsUrl = buildTerminalWebSocketUrl(props.instanceId)
+        const ws = new WebSocket(wsUrl, [ticketResponse.ticket])
         // 使用 arraybuffer 确保二进制数据按顺序处理（避免 Blob 异步导致的乱序）
         ws.binaryType = 'arraybuffer'
         currentTab.ws = ws

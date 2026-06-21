@@ -46,10 +46,11 @@ export function shouldRetryTerminalClose(code: number): boolean {
   return !NON_RETRYABLE_CLOSE_CODES.has(code)
 }
 
-export function buildTerminalWebSocketUrl(instanceId: number, ticket: string): string {
+export function buildTerminalWebSocketUrl(instanceId: number): string {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
   const host = window.location.host
-  return `${protocol}//${host}/api/ws/instances/${instanceId}/terminal?ticket=${encodeURIComponent(ticket)}`
+  // 票据不再放在 URL 查询串(避免泄漏到代理日志/浏览器历史)，改用 Sec-WebSocket-Protocol 子协议传递
+  return `${protocol}//${host}/api/ws/instances/${instanceId}/terminal`
 }
 
 export function isTerminalControlMessage(parsed: unknown): parsed is TerminalControlMessage {

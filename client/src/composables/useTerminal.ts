@@ -184,8 +184,8 @@ export function useTerminal(instanceId: Ref<number | null>, options: TerminalOpt
 
         try {
             const ticketResponse = await api.instances.createTerminalTicket(instanceId.value)
-            const wsUrl = buildTerminalWebSocketUrl(instanceId.value, ticketResponse.ticket)
-            ws = new WebSocket(wsUrl)
+            const wsUrl = buildTerminalWebSocketUrl(instanceId.value)
+            ws = new WebSocket(wsUrl, [ticketResponse.ticket])
             // 使用 arraybuffer 确保二进制数据按顺序处理（避免 Blob 异步导致的乱序）
             ws.binaryType = 'arraybuffer'
 
